@@ -1,0 +1,13 @@
+[package]
+name = "unicode-width-blog"
+version = "0.1.0"
+authors = ["Thom Chiovoloni <tchiovoloni@mozilla.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libc = "0.2"
+unicode-segmentation = "1.6"
+unicode-width = "0.1"
+unic-emoji-char = "0.9"
