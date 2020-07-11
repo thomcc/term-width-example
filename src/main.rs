@@ -1,167 +1,136 @@
 #![allow(dead_code)]
 
+mod draw;
 mod term;
+mod wcwidths;
 use std::io::Write;
 use term::Terminal;
 type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-fn draw_boxed_byte_len(t: &mut Terminal, x: u16, y: u16, s: &str) -> Result<()> {
-    t.move_to(x, y)?;
-    let line = "─".repeat(s.len());
-    write!(t, "┌{}┐", line)?;
-    t.move_to(x, y + 1)?;
-    write!(t, "│{}│", s)?;
-    t.move_to(x, y + 2)?;
-    write!(t, "└{}┘", line)?;
-    Ok(())
+type DrawFunc = (
+    &'static str,
+    fn(&mut Terminal, u16, u16, &str) -> Result<()>,
+);
+
+const IMPLS: &[DrawFunc] = &[
+    ("byte_len", draw::byte_len),
+    ("codepoints", draw::codepoints),
+    ("nfc_codepoints", draw::nfc_codepoints),
+    ("graphemes", draw::graphemes),
+    ("unicode_width", draw::unicode_width),
+    ("nfc_unicode_width", draw::nfc_unicode_width),
+    ("system_wcwidth", draw::system_wcwidth),
+    ("widecharwidth_rec", draw::widecharwidth_recommended),
+    ("widecharwidth_fish", draw::widecharwidth_fish),
+    ("termwiz_ish", draw::termwiz_ish),
+    ("read_pos", draw::read_pos),
+];
+
+fn list() {
+    for i in IMPLS {
+        println!("- `{}`", i.0);
+    }
 }
 
-fn draw_boxed_char_count(t: &mut Terminal, x: u16, y: u16, s: &str) -> Result<()> {
-    t.move_to(x, y)?;
-    let line = "─".repeat(s.chars().count());
-    write!(t, "┌{}┐", line)?;
-    t.move_to(x, y + 1)?;
-    write!(t, "│{}│", s)?;
-    t.move_to(x, y + 2)?;
-    write!(t, "└{}┘", line)?;
-    Ok(())
-}
-
-fn draw_boxed_graphemes(t: &mut Terminal, x: u16, y: u16, s: &str) -> Result<()> {
-    use unicode_segmentation::UnicodeSegmentation;
-    t.move_to(x, y)?;
-    let line = "─".repeat(s.graphemes(true).count());
-    write!(t, "┌{}┐", line)?;
-    t.move_to(x, y + 1)?;
-    write!(t, "│{}│", s)?;
-    t.move_to(x, y + 2)?;
-    write!(t, "└{}┘", line)?;
-    Ok(())
-}
-
-fn draw_boxed_unicode_width(t: &mut Terminal, x: u16, y: u16, s: &str) -> Result<()> {
-    use unicode_width::UnicodeWidthStr;
-    t.move_to(x, y)?;
-    let line = "─".repeat(s.width());
-    write!(t, "┌{}┐", line)?;
-    t.move_to(x, y + 1)?;
-    write!(t, "│{}│", s)?;
-    t.move_to(x, y + 2)?;
-    write!(t, "└{}┘", line)?;
-    Ok(())
-}
-
-pub fn hybrid_width(s: &str) -> usize {
-    use unicode_segmentation::UnicodeSegmentation;
-    use unicode_width::UnicodeWidthStr;
-    s.graphemes(true)
-        .map(|g| {
-            let is_emoji_sequence = g.chars().any(|c| {
-                // This is incomplete, but you could imagine a version which
-                // follows https://unicode.org/reports/tr51. At a minimum this
-                // should probably
-                unic_emoji_char::is_emoji_modifier(c)
-                    || unic_emoji_char::is_emoji_modifier_base(c)
-                    // regional indicator sequence.
-                    || (0x1F1E6..=0x1F1FF).contains(&(c as u32))
-            });
-            if is_emoji_sequence {
-                2
-            } else {
-                g.width()
-            }
-        })
-        .sum()
-}
-
-fn draw_boxed_hybrid_width_graphemes(t: &mut Terminal, x: u16, y: u16, s: &str) -> Result<()> {
-    t.move_to(x, y)?;
-    let line = "─".repeat(hybrid_width(s));
-    write!(t, "┌{}┐", line)?;
-    t.move_to(x, y + 1)?;
-    write!(t, "│{}│", s)?;
-    t.move_to(x, y + 2)?;
-    write!(t, "└{}┘", line)?;
-    Ok(())
-}
-
-fn draw_boxed_fixed(t: &mut Terminal, x: u16, y: u16, s: &str) -> Result<()> {
-    t.move_to(x, y + 1)?;
-    write!(t, "│{}│", s)?;
-    t.flush()?;
-    let (ex, ey) = t.get_pos()?;
-    let (sx, sy) = (x, y + 1);
-    let width = if ey != sy {
-        t.move_to(t.size().0 - 2, sy)?;
-        write!(t, "│")?;
-        t.clear(term::Clear::ToEndOfScreen)?;
-        (t.size().0 - 2).saturating_sub(sx)
-    } else {
-        debug_assert!(ex > sx);
-        ex - sx
-    };
-    let line = "─".repeat((width as usize).saturating_sub(2));
-    t.move_to(x, y)?;
-    write!(t, "┌{}┐", line)?;
-    t.move_to(x, y + 2)?;
-    write!(t, "└{}┘", line)?;
-    Ok(())
+#[derive(argh::FromArgs)]
+/// Try to draw boxes around text.
+struct Args {
+    #[argh(switch)]
+    /// list all tests
+    list: bool,
+    #[argh(switch)]
+    /// disable drawing the boxes colored (this is done so that they can stand
+    /// out).
+    no_color: bool,
+    #[argh(switch)]
+    /// bypass isatty check
+    force: bool,
+    #[argh(switch)]
+    /// allow arguments longer than terminal width. only `read_pos` has been
+    /// programmed to handle this, so you probably need `-t read-pos` too.
+    allow_overlong: bool,
+    /// only include the specified tests, may repeat, default is all
+    #[argh(option, short = 't')]
+    test: Vec<String>,
+    /// list of phrases to draw boxed.
+    #[argh(positional)]
+    phrases: Vec<String>,
 }
 
 fn main() -> Result<()> {
-    let args = std::env::args().collect::<Vec<_>>();
-    if args.len() < 2 {
-        eprintln!("Usage: {} text", args[0]);
+    crate::wcwidths::init_once();
+    let mut args: Args = argh::from_env();
+    if args.list {
+        list();
+        return Ok(());
+    }
+    if args.phrases.is_empty() {
+        args.phrases.push("🏳️‍🌈 space communism".to_string());
+    }
+    if !args.force && !term::is_terminal() {
+        eprintln!("doesn't look like this is a terminal. this test requires that.");
         std::process::exit(1);
     }
-    let impls: &[(&str, fn(&mut Terminal, u16, u16, &str) -> Result<()>)] = &[
-        ("bytes", draw_boxed_byte_len),
-        ("chars", draw_boxed_char_count),
-        ("graphemes", draw_boxed_graphemes),
-        ("unicode-width", draw_boxed_unicode_width),
-        ("hybrid/heuristic", draw_boxed_hybrid_width_graphemes),
-        ("fixed", draw_boxed_fixed),
-    ];
 
-    let mut term = Terminal::open(true)?;
-    let mut pos = term.get_pos()?;
-    let size = term.size();
-    if pos.1 as usize + (impls.len() * 4) >= size.1 as usize {
-        term.clear(term::Clear::FullScreen)?;
-        pos = (1, 1);
-        term.move_to(pos.0, pos.1)?;
+    let filters = args
+        .test
+        .iter()
+        .map(|i| i.trim().to_ascii_lowercase().replace('-', "_"))
+        .collect::<std::collections::HashSet<_>>();
+
+    let selected_tests = if filters.len() == 0 {
+        IMPLS.iter().collect()
     } else {
-        term.scroll(impls.len() as u16 * 4)?;
-        pos = (1, pos.1.checked_sub(impls.len() as u16 * 4).unwrap_or(1));
-        term.move_to(pos.0, pos.1)?;
-        term.clear(term::Clear::ToEndOfScreen)?;
+        IMPLS
+            .iter()
+            .filter(|f| filters.contains(f.0))
+            .collect::<Vec<_>>()
     };
-    let (x, mut y) = pos;
-    let mut continue_after = Some(1);
-    while let Some(arg_start) = continue_after.take() {
-        if arg_start >= args.len() {
-            break;
+
+    if selected_tests.is_empty() && !filters.is_empty() {
+        eprintln!("Warning: all implementations filtered. Printing options.");
+        list();
+        std::process::exit(1);
+    }
+
+    let mut term = Terminal::open(true, args.no_color)?;
+    let size = term.size();
+
+    term.clear(term::Clear::FullScreen)?;
+    term.move_to(1, 1)?;
+
+    // Ensure we won't try to make a column that goes off the end. If we would,
+    // we just do set of rows.
+    let mut passes = vec![(0, vec![])];
+    for word in args.phrases {
+        let mut cur = passes.pop().unwrap();
+        if cur.0 + word.len() + 5 >= size.0 as usize && !cur.1.is_empty() {
+            passes.push(std::mem::replace(&mut cur, (0, vec![])));
         }
-        for &(name, func) in impls {
+        cur.0 += word.len() + 4;
+        cur.1.push(word);
+        passes.push(cur)
+    }
+
+    let (x, mut y) = (1, 1);
+    for (_, pass) in passes {
+        for &test in &selected_tests {
             term.move_to(x, y)?;
-            if y + 3 >= size.1 {
+            if y + 4 >= size.1 {
                 term.scroll(4)?;
                 y -= 4;
                 term.move_to(x, y)?;
             }
-            write!(term, "{}", name)?;
+            term.write_colored(3, test.0)?;
+            y += 1;
             let mut x = x;
-            for (i, arg) in args[arg_start..].iter().enumerate() {
-                func(&mut term, x, y + 1, arg)?;
-                x += arg.len() as u16 + 5;
-                if x > term.size().0 {
-                    continue_after = Some(i + 1);
-                    break;
-                }
+            for word in &pass {
+                (test.1)(&mut term, x, y, word)?;
+                x += word.len() as u16 + 5;
             }
-            y += 4;
-            term.move_to(x, y + 4)?;
+            y += 3;
+            // term.move_to(x, y + 3)?;
         }
     }
     term.flush()?;

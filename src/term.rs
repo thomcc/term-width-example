@@ -11,18 +11,19 @@ pub struct Terminal {
     size: (u16, u16),
     prev: Option<termios>,
     tty: File,
+    no_color: bool,
 }
 
 impl Terminal {
-    pub fn open(raw: bool) -> Result<Self> {
+    pub fn open(raw: bool, no_color: bool) -> Result<Self> {
         let tty = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/tty")?;
-        let size = size()?;
+        let fd = tty.as_raw_fd();
+        let size = size(fd)?;
         let prev = if raw {
             unsafe {
-                let fd = tty.as_raw_fd();
                 let prev = get_termios(fd)?;
                 let mut raw = prev;
                 libc::cfmakeraw(&mut raw);
@@ -35,7 +36,12 @@ impl Terminal {
         } else {
             None
         };
-        Ok(Self { prev, tty, size })
+        Ok(Self {
+            prev,
+            tty,
+            size,
+            no_color,
+        })
     }
 
     pub fn size(&self) -> (u16, u16) {
@@ -111,23 +117,43 @@ impl Terminal {
         self.tty.flush()?;
         Ok(())
     }
+    /// separate than normal write, since on windows this would be:
+    /// - doing a syscall to change console color
+    /// - doing normal print
+    /// - doing a syscall to change back
+    pub fn write_colored(&mut self, color: u8, s: &str) -> Result<()> {
+        if self.no_color {
+            self.tty.write_all(s.as_bytes())?;
+        } else {
+            write!(self.tty, "\x1b[38;5;{}m{}\x1b[m", color, s)?;
+        }
+        Ok(())
+    }
 }
 
-fn size() -> Result<(u16, u16)> {
-    Ok((tput::<u16>("cols")?, tput::<u16>("lines")?))
+// basic sanity check
+pub fn is_terminal() -> bool {
+    if unsafe { libc::isatty(libc::STDOUT_FILENO) } != 1 {
+        return false;
+    }
+    match std::env::var("TERM") {
+        Err(_) => false,
+        Ok(s) if s.eq_ignore_ascii_case("dumb") || s.is_empty() => false,
+        _ => true,
+    }
 }
 
-// This is a lot more reliable in subshells and such than using the libc
-// api. yeah, really. I mean, I probably should fall back to the other
-// thing in case the user doesn't have a terminfo entry for their `TERM`
-fn tput<T: std::str::FromStr>(cmd: &str) -> Result<T> {
-    Ok(
-        String::from_utf8_lossy(&std::process::Command::new("tput").arg(cmd).output()?.stdout)
-            .trim()
-            .parse::<T>()
-            .map_err(|_| format!("Failed to parse tput {} output", cmd))?,
-    )
+fn size(fd: libc::c_int) -> Result<(u16, u16)> {
+    unsafe {
+        let mut wsz: libc::winsize = core::mem::zeroed();
+        let ec = libc::ioctl(fd, libc::TIOCGWINSZ, &mut wsz);
+        if ec < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok((wsz.ws_col, wsz.ws_row))
+    }
 }
+
 impl Write for Terminal {
     fn write(&mut self, s: &[u8]) -> std::io::Result<usize> {
         self.tty.write(s)
