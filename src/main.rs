@@ -122,7 +122,7 @@ fn main() -> Result<()> {
                 y -= 4;
                 term.move_to(x, y)?;
             }
-            term.write_colored(3, test.0)?;
+            term.write_colored(term::Color::Yellow, test.0)?;
             y += 1;
             let mut x = x;
             for word in &pass {

@@ -1,6 +1,6 @@
 //! This is where the code the blog is about lives, although I've cleaned it up some.
 use super::{
-    term::{Clear, Terminal},
+    term::{Clear, Color, Terminal},
     Result,
 };
 // use std::io::Write;
@@ -8,7 +8,7 @@ use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const BOX_COL: u8 = 1;
+const BOX_COL: Color = Color::Red;
 
 // it's easier to determine how wron something is without the box drawing chars,
 // so only use them if --feature="box_drawing" is passed.

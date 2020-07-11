@@ -52,7 +52,6 @@ impl Terminal {
         self.tty.write(s.as_bytes())?;
         Ok(())
     }
-
     // write `\E[6n`, get back `\E[{y};{x}R`. We do this in a dumb way but a
     // serious application would have this code written.
     pub fn get_pos(&mut self) -> Result<(u16, u16)> {
@@ -103,15 +102,6 @@ impl Terminal {
         })?;
         Ok(())
     }
-    pub fn save(&mut self) -> Result<()> {
-        self.tty.write_all(b"\x1b[s")?;
-        Ok(())
-    }
-
-    pub fn restore(&mut self) -> Result<()> {
-        self.tty.write_all(b"\x1b[u")?;
-        Ok(())
-    }
     pub fn scroll(&mut self, n: u16) -> Result<()> {
         write!(self.tty, "\x1b[{}S", n)?;
         self.tty.flush()?;
@@ -121,14 +111,26 @@ impl Terminal {
     /// - doing a syscall to change console color
     /// - doing normal print
     /// - doing a syscall to change back
-    pub fn write_colored(&mut self, color: u8, s: &str) -> Result<()> {
+    pub fn write_colored(&mut self, color: Color, s: &str) -> Result<()> {
         if self.no_color {
             self.tty.write_all(s.as_bytes())?;
         } else {
-            write!(self.tty, "\x1b[38;5;{}m{}\x1b[m", color, s)?;
+            write!(self.tty, "\x1b[3{}m{}\x1b[m", color as u8, s)?;
         }
         Ok(())
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum Color {
+    Black = 0,
+    Red = 1,
+    Green = 2,
+    Yellow = 3,
+    Blue = 4,
+    Magenta = 5,
+    Cyan = 6,
+    White = 7,
 }
 
 // basic sanity check
